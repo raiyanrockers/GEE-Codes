@@ -1,0 +1,42 @@
+var roi = table;
+// Filter MODIS Terra Surface Reflectance for the year 2023
+var modisTerra = ee.ImageCollection('MODIS/006/MOD09GA')
+                  .filterBounds(roi)
+                  .filterDate('2023-01-01', '2023-12-31');
+
+// Filter MODIS Aqua Surface Reflectance for the year 2023
+var modisAqua = ee.ImageCollection('MODIS/006/MYD09GA')
+                  .filterBounds(roi)
+                  .filterDate('2023-01-01', '2023-12-31');
+
+// Merge MODIS Terra and Aqua collections
+var modisCombined = modisTerra.merge(modisAqua);
+
+// Function to calculate LST using MODIS
+function calculateLST_MODIS(image) {
+  var LST = image.expression(
+    '(Tb/(1 + (0.00115 * (Tb / 1.438))) - 273.15)', {
+      'Tb': image.select('LST_Day_1km')
+    });
+  return LST.rename('LST').copyProperties(image, ['system:time_start']);
+}
+
+// Map the LST calculation function over the MODIS collection
+var lst2023_MODIS = modisCombined.map(calculateLST_MODIS);
+
+// Calculate mean LST for the year
+var meanLST2023_MODIS = lst2023_MODIS.mean();
+
+// Display the result
+Map.centerObject(roi, 8);
+Map.addLayer(roi, {color: 'FF0000'}, 'Region of Interest');
+Map.addLayer(meanLST2023_MODIS, {min: 0, max: 60, palette: ['blue', 'cyan', 'green', 'yellow', 'red']}, 'Mean LST 2023 (MODIS)');
+
+// Export the LST map to Google Drive
+Export.image.toDrive({
+  image: meanLST2023_MODIS,
+  description: 'LST_MODIS_2023',
+  scale: 1000, // Set the scale in meters
+  region: roi.geometry(),
+  maxPixels: 1e10 // Adjust as needed
+});
