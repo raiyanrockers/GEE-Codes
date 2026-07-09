@@ -1,0 +1,120 @@
+
+var geometry = table.filter(ee.Filter.inList('ADM2_EN',ee.List(['Dhaka','Gazipur','Narayanganj'])));
+Map.centerObject(geometry,9)
+function maskL5sr(image) {
+
+  var qaMask = image.select('QA_PIXEL').bitwiseAnd(parseInt('11111', 2)).eq(0);
+  var saturationMask = image.select('QA_RADSAT').eq(0);
+
+  // Apply the scaling factors to the appropriate bands.
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('ST_B6').multiply(0.00341802).add(149.0).subtract(273.15);
+
+  // Replace the original bands with the scaled ones and apply the masks.
+  return image.addBands(opticalBands, null, true)
+      .addBands(thermalBands, null, true)
+      .updateMask(qaMask)
+      .updateMask(saturationMask)
+      .clip(geometry);
+}
+
+// (a) 1993, (b) 1999, (c) 2005, (d) 2011, (e) 2017, (f) 2023
+var year = 1993
+// Map the function over one year of data.
+var collection = ee.ImageCollection("LANDSAT/LT05/C02/T1_L2")
+                    .filterDate(year+'-01-01',year+'-12-30')
+                    .filter(ee.Filter.lt('CLOUD_COVER',20))
+                    .filterBounds(geometry)
+                    .map(maskL5sr)
+              .map(function add(ls){
+                      var ndvi = ls.normalizedDifference(['SR_B4', 'SR_B3']).rename('NDVI');
+                      var thermal = ls.select('ST_B6');
+                      
+                      var min = ee.Number(ndvi.reduceRegion({
+                              reducer: ee.Reducer.min(),
+                              geometry: geometry,
+                              scale: 30,
+                              maxPixels: 1e12
+                              }).values().get(0));
+                              
+                      var max = ee.Number(ndvi.reduceRegion({
+                              reducer: ee.Reducer.max(),
+                              geometry: geometry,
+                              scale: 30,
+                              maxPixels: 1e12
+                              }).values().get(0));
+                var fv =(ndvi.subtract(min).divide(max.subtract(min))).pow(ee.Number(2)).rename('FV');
+                
+                      var a= ee.Number(0.004);
+                      var b= ee.Number(0.986);
+                      var EM=fv.multiply(a).add(b).rename('EMM');
+                      
+                      var lst = thermal.expression(
+                                  '(Tb/(1 + (0.001145* (Tb / 1.438))*log(Ep)))-273.15', {
+                                  'Tb': thermal.select('ST_B6').add(273.15),
+                                  'Ep': EM.select('EMM')
+                                }).rename('LST');
+                      
+                      return ls.addBands(lst)
+                    })
+                    
+                    .mean()
+                    
+
+print(collection);
+Map.addLayer(collection)
+
+
+var  landsat= collection
+
+
+//Min-------------------------------------------
+var zonalStats_min = landsat.select('LST').reduceRegions({
+  collection:geometry,
+  reducer: ee.Reducer.min().setOutputs(['LST']),
+  scale: 30})
+
+// Export the results
+Export.table.toDrive({
+  collection: zonalStats_min,
+  description: 'LST_per_Dist_min'+"_"+year,
+  folder: 'Tanvir_URP18',
+  fileNamePrefix: 'LST_per_Dist_min'+"_"+year,
+  fileFormat: 'CSV',
+  selectors: ['ADM2_EN', 'LST']
+})
+
+
+//Max-----------------------------------------------
+
+var zonalStats_max = landsat.select('LST').reduceRegions({
+  collection:geometry,
+  reducer: ee.Reducer.max().setOutputs(['LST']),
+  scale: 30})
+
+print('MAX_Dist_LST', zonalStats_max.select('LST').first());
+
+// Export the results
+Export.table.toDrive({
+  collection: zonalStats_max,
+  description: 'LST_per_Dist_max'+"_"+year,
+  folder: 'Tanvir_URP18',
+  fileNamePrefix: 'LST_per_Dist_max'+"_"+year,
+  fileFormat: 'CSV',
+  selectors: ['ADM2_EN', 'LST']
+})
+
+
+
+// Image
+Export.image.toDrive({
+  image:landsat, 
+  description:"LST_per_Dist"+"_"+year, 
+  folder:'Tanvir_URP18', 
+  fileNamePrefix:"LST_per_Dist"+"_"+year,
+  region:geometry, 
+  scale:30, 
+  maxPixels:1e13, 
+  });
+//
+
