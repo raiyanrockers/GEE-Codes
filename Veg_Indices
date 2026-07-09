@@ -1,0 +1,102 @@
+
+// NDVI, NDBI, NDWI, SAVI
+// ================================
+
+// Define your Region of Interest (replace with your own geometry)
+var roi = table;
+
+// Load Landsat 5 Collection 2 Level-2 data (Surface Reflectance)
+var collection = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+  .filterBounds(roi)
+  .filterDate('1998-01-01', '1998-12-31')
+  .filter(ee.Filter.lt('CLOUD_COVER', 20));
+
+// Select least cloudy image
+var image = collection.sort('CLOUD_COVER').first();
+
+// Apply scale factor to surface reflectance bands only
+var srBands = image.select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7'])
+  .multiply(0.0000275).add(-0.2);
+
+// Rename bands for convenience
+var bands = srBands.rename(['Blue','Green','Red','NIR','SWIR1','SWIR2']);
+
+// ============= Indices =============
+
+// NDVI = (NIR - Red) / (NIR + Red)
+var ndvi = bands.normalizedDifference(['NIR','Red']).rename('NDVI');
+
+// NDBI = (SWIR1 - NIR) / (SWIR1 + NIR)
+var ndbi = bands.normalizedDifference(['SWIR1','NIR']).rename('NDBI');
+
+// NDWI = (Green - NIR) / (Green + NIR)
+var ndwi = bands.normalizedDifference(['Green','NIR']).rename('NDWI');
+
+// SAVI = ((NIR - Red) / (NIR + Red + L)) * (1 + L)
+var L = 0.5;
+var savi = bands.expression(
+  '((NIR - Red) / (NIR + Red + L)) * (1 + L)',
+  {'NIR': bands.select('NIR'), 'Red': bands.select('Red'), 'L': L}
+).rename('SAVI');
+
+// Combine indices
+var indices = ndvi.addBands([ndbi, ndwi, savi]);
+
+// ============= Visualization =============
+var visNDVI = {min: -1, max: 1, palette: ['blue','white','green']};
+var visNDBI = {min: -1, max: 1, palette: ['blue','white','brown']};
+var visNDWI = {min: -1, max: 1, palette: ['brown','white','blue']};
+var visSAVI = {min: -1, max: 1, palette: ['white','yellow','green']};
+// Center map and display
+Map.centerObject(roi, 8);
+Map.addLayer(ndvi, visNDVI, 'NDVI (1998)');
+Map.addLayer(ndbi, visNDBI, 'NDBI (1998)');
+Map.addLayer(ndwi, visNDWI, 'NDWI (1998)');
+Map.addLayer(savi, visSAVI, 'SAVI (1998)');
+
+// ================= Export =================
+Export.image.toDrive({
+  image: ndvi.clip(roi),
+  description: 'ndvi_1998',
+  folder: 'GEE_exports',
+  region: roi,
+  scale: 30,
+  maxPixels: 1e13
+});
+
+Export.image.toDrive({
+  image: ndbi.clip(roi),
+  description: 'ndbi_1998',
+  folder: 'GEE_exports',
+  region: roi,
+  scale: 30,
+  maxPixels: 1e13
+});
+
+Export.image.toDrive({
+  image: ndwi.clip(roi),
+  description: 'NDWI_1998',
+  folder: 'GEE_exports',
+  region: roi,
+  scale: 30,
+  maxPixels: 1e13
+});
+
+Export.image.toDrive({
+  image: savi.clip(roi),
+  description: 'SAVI_1998',
+  folder: 'GEE_exports',
+  region: roi,
+  scale: 30,
+  maxPixels: 1e13
+});
+
+// Export all indices as one image to Google Drive
+Export.image.toDrive({
+  image: indices.clip(roi),
+  description: 'Landsat5_1998_Indices',
+  folder: 'GEE_exports',
+  scale: 30,
+  region: roi,
+  maxPixels: 1e13
+});
