@@ -1,0 +1,55 @@
+var roi = table; //* your predefined ROI */;
+var startDate = '2024-04-01';
+var endDate = '2024-08-30';
+
+// Function to mask clouds using the QA_PIXEL band
+function maskL8sr(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitMask = (1 << 4); // Cloud shadow bit
+  var cloudsBitMask = (1 << 5); // Clouds bit
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                  .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+// Load Landsat 8 Collection 2 Surface Reflectance
+var landsat8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+                .filterBounds(roi)
+                .filterDate(startDate, endDate)
+                .map(maskL8sr)
+                .select('ST_B10');  // Select only thermal band to avoid unintentional scaling
+
+// Calculate median of thermal band
+var thermalMedian = landsat8.median().clip(roi);
+
+// Convert thermal band (ST_B10) to brightness temperature in Celsius
+var lstCelsius = thermalMedian.multiply(0.00341802).subtract(273.15).rename('LST_Celsius');
+
+// Display results on the map
+Map.centerObject(roi, 10);
+Map.addLayer(lstCelsius, {min: 10, max: 50, palette: ['blue', 'green', 'yellow', 'red']}, 'LST (°C)');
+
+// Calculate LST statistics within the ROI
+var lstStats = lstCelsius.reduceRegion({
+  reducer: ee.Reducer.min()
+             .combine(ee.Reducer.max(), '', true)
+             .combine(ee.Reducer.mean(), '', true)
+             .combine(ee.Reducer.stdDev(), '', true),
+  geometry: roi,
+  scale: 30,
+  maxPixels: 1e9
+});
+
+// Print statistics to the console
+print('LST Statistics (°C):', lstStats);
+
+// Export LST to Google Drive
+Export.image.toDrive({
+  image: lstCelsius,
+  description: 'Mean_LST_August2023',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'Mean_LST_August2023',
+  scale: 30,
+  region: roi,
+  maxPixels: 1e9
+});
