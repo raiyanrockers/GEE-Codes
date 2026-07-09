@@ -1,0 +1,58 @@
+var aoi = table;
+
+// Step 2: Define Date Range
+var startDate = '2024-01-01';
+var endDate = '2024-06-30';
+
+
+// Step 3: Load PM2.5 Dataset (NASA GEOS-CF hourly forecast data)
+var dataset = ee.ImageCollection('NASA/GEOS-CF/v1/fcst/tavg1hr')
+                .filterDate(startDate, endDate)
+                .select('PM25_RH35_GCC');
+
+// Step 4: Calculate Mean PM2.5
+var pm25 = dataset.mean().clip(aoi);
+
+// Step 5: Define AQI Calculation Function for PM2.5
+function calculateAQI(image) {
+  var breaks = [
+    {Clow: 0.0, Chigh: 12.0, Ilow: 0, Ihigh: 50},
+    {Clow: 12.1, Chigh: 35.4, Ilow: 51, Ihigh: 100},
+    {Clow: 35.5, Chigh: 55.4, Ilow: 101, Ihigh: 150},
+    {Clow: 55.5, Chigh: 150.4, Ilow: 151, Ihigh: 200},
+    {Clow: 150.5, Chigh: 250.4, Ilow: 201, Ihigh: 300},
+    {Clow: 250.5, Chigh: 500.4, Ilow: 301, Ihigh: 500}
+  ];
+
+  var aqi = ee.Image(0);
+
+  breaks.forEach(function(b) {
+    var mask = image.gte(b.Clow).and(image.lte(b.Chigh));
+    var scale = (b.Ihigh - b.Ilow) / (b.Chigh - b.Clow);
+    var val = image.subtract(b.Clow).multiply(scale).add(b.Ilow);
+    aqi = aqi.where(mask, val);
+  });
+
+  return aqi.rename('AQI_PM25');
+}
+
+// Step 6: Apply AQI Function
+var aqiImage = calculateAQI(pm25);
+
+// Step 7: Visualize
+Map.centerObject(aoi, 8);
+Map.addLayer(aqiImage.clip(aoi), {
+  min: 0,
+  max: 300,
+  palette: ['green', 'yellow', 'orange', 'red', 'purple', 'maroon']
+}, 'PM2.5 AQI');
+
+// Step 8: Export to Google Drive (Optional)
+Export.image.toDrive({
+  image: aqiImage.clip(aoi),
+  description: 'PM25_AQI_2025_june',
+  scale: 1000,
+  region: aoi,
+  folder: 'Air_Pollution_Nova',
+  maxPixels: 1e13
+});
