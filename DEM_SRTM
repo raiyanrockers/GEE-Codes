@@ -1,0 +1,39 @@
+// Define ROI
+var roi = table /* your predefined ROI */;
+
+// Load SRTM DEM dataset
+var dem = ee.Image('USGS/SRTMGL1_003').clip(roi);
+
+// Define visualization parameters
+var demVis = {
+  min: -42,
+  max: 533,
+  palette: ['0000FF', '00FFFF', '00FF00', 'FFFF00', 'FF0000', 'FFFFFF']
+};
+
+// Display DEM on the map
+Map.centerObject(roi, 10);
+Map.addLayer(dem, demVis, 'DEM');
+
+// Calculate DEM statistics within the ROI
+var demStats = dem.reduceRegion({
+  reducer: ee.Reducer.min()
+             .combine(ee.Reducer.max(), '', true)
+             .combine(ee.Reducer.mean(), '', true)
+             .combine(ee.Reducer.stdDev(), '', true),
+  geometry: roi,
+  scale: 30,
+  maxPixels: 1e9
+});
+print('DEM Statistics:', demStats);
+
+// Export the DEM image to Google Drive
+Export.image.toDrive({
+  image: dem,
+  description: 'SRTM_DEM',
+  folder: 'GEE',
+  fileNamePrefix: 'SRTM_DEM_FP',
+  scale: 30,
+  region: roi,
+  maxPixels: 1e9
+});
