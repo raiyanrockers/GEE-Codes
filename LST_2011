@@ -1,0 +1,76 @@
+var roi= table;
+// Filter Landsat 7 imagery for the year 2011
+var landsat2011 = ee.ImageCollection('LANDSAT/LE07/C01/T1_TOA')
+                  .filterBounds(roi)
+                  .filterDate('2011-01-01', '2011-12-31');
+
+// Function to mask clouds using Landsat QA band
+function maskLandsatClouds(image) {
+  var qa = image.select('BQA');
+  // Bits 3 and 5 are cloud shadow and cloud, respectively.
+  var cloudBitMask = 1 << 5;
+  var shadowBitMask = 1 << 3;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+             .and(qa.bitwiseAnd(shadowBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+
+// Map the cloud masking function over the collection
+var landsat2011Masked = landsat2011.map(maskLandsatClouds);
+
+// Function to fill in missing or erroneous pixels using image inpainting
+function fillScanLines(image) {
+  // Get the width and height of the image
+  var width = image.select(0).projection().nominalScale().multiply(image.select(0).projection().getInfo()["dimensions"][0]);
+  var height = image.select(0).projection().nominalScale().multiply(image.select(0).projection().getInfo()["dimensions"][1]);
+  
+  // Define the x and y values for interpolation
+  var x = ee.List.sequence(0, width.subtract(1));
+  var y = ee.List.sequence(0, height.subtract(1));
+  
+  // Interpolate the missing values
+  var inpainted = image.interpolate('bicubic');
+  
+  return inpainted;
+}
+
+// Map the fill scan lines function over the collection
+var landsat2011Filled = landsat2011Masked.map(fillScanLines);
+
+// Function to calculate LST
+function calculateLST(image) {
+  // Convert TOA radiance to Top of Atmosphere Brightness Temperature (BT) for Landsat 7
+  var BT = image.select('B6_VCID_2').multiply(0.1).subtract(273.15);
+  // LST calculation
+  var LST = BT.expression(
+    '(Tb/(1 + (0.00115 * (Tb / 1.438))) - 273.15)', {
+      'Tb': BT
+    });
+  return LST.rename('LST').copyProperties(image, ['system:time_start']);
+}
+
+// Map the LST calculation function over the collection
+var lst2011 = landsat2011Filled.map(calculateLST);
+
+// Calculate mean LST for the year
+var meanLST2011 = lst2011.mean();
+
+// Display the result
+Map.centerObject(roi, 8);
+Map.addLayer(roi, {color: 'FF0000'}, 'Region of Interest');
+Map.addLayer(meanLST2011.clip(roi), {min:17.095614615452575,max:30.209227900692156,palette: [
+'040274', '040281', '0502a3', '0502b8', '0502ce', '0502e6',
+'0602ff', '235cb1', '307ef3', '269db1', '30c8e2', '32d3ef',
+'3be285', '3ff38f', '86e26f', '3ae237', 'b5e22e', 'd6e21f',
+'fff705', 'ffd611', 'ffb613', 'ff8b13', 'ff6e08', 'ff500d',
+'ff0000', 'de0101', 'c21301', 'a71001', '911003'
+ ]},'Mean LST 2011LST');
+
+// Export the LST map to Google Drive
+Export.image.toDrive({
+  image: meanLST2011,
+  description: 'LST_2011_Landsat7',
+  scale: 30, // Set the scale in meters
+  region: roi,
+  maxPixels: 1e10 // Adjust as needed
+});
