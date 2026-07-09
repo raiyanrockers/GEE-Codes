@@ -1,0 +1,70 @@
+// Define the region of interest (roi) for Bangladesh (Dhaka example)
+var roi = table;
+// Cloud masking function using the MSK_CLASSI_OPAQUE and MSK_CLASSI_CIRRUS bands
+function maskClouds(image) {
+  var opaqueClouds = image.select('MSK_CLASSI_OPAQUE').neq(1);  // Opaque clouds mask
+  var cirrusClouds = image.select('MSK_CLASSI_CIRRUS').neq(1);  // Cirrus clouds mask
+
+  // Combine the masks for both opaque and cirrus clouds
+  var mask = opaqueClouds.and(cirrusClouds);
+
+  // Apply the mask and scale the image by 10000 to normalize reflectance values
+  return image.updateMask(mask).divide(10000);
+}
+
+
+// Load Sentinel-2 L1C image collection for a fixed date (August 2023)
+var sentinel2 = ee.ImageCollection('COPERNICUS/S2')  // Use Sentinel-2 L1C (Top of Atmosphere)
+  .filterBounds(roi)  // Filter to your region of interest
+  .filterDate('2024-10-12', '2024-10-25')  // Adjusted date range to ensure data is available
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))  // Pre-filter by cloud cover percentage
+  .map(maskClouds);  // Apply cloud masking
+// // Load Sentinel-2 Surface Reflectance (Level 2A) image collection for a fixed date (August 15, 2023)
+// var sentinel2 = ee.ImageCollection('COPERNICUS/S2')  // Use Surface Reflectance (L2A) collection
+//   // Use Surface Reflectance (L2A) collection
+//   .filterBounds(roi)  // Filter to your region of interest
+//   .filterDate('2024-06-01', '2024-09-25')  // Filter for a specific date
+//   .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10));  // Filter by cloud cover
+
+// Check if any images are available for the given date
+var image = sentinel2.median(). clip(roi);
+
+if (image) {
+  // Sentinel-2 bands: NIR (B8), Red (B4), Blue (B2)
+  var nir = image.select('B8');  // Near-Infrared band
+  var red = image.select('B4');  // Red band
+  var blue = image.select('B2');  // Blue band
+
+  // Calculate ARVI
+  var arvi = image.expression(
+    '((NIR - 2 * RED + BLUE) / (NIR + 2 * RED - BLUE))', {
+      'NIR': nir,
+      'RED': red,
+      'BLUE': blue
+    }
+  );
+ // Calculate the minimum and maximum ARVI values within the region
+  var stats = arvi.reduceRegion({
+    reducer: ee.Reducer.minMax(),
+    geometry: roi,  // User's predefined ROI
+    scale: 10,  // Use 10-meter scale for Sentinel-2 resolution
+    maxPixels: 1e9
+  });
+
+  // Print the raw stats result to inspect the keys directly
+  print('Raw stats result:', stats);
+  // Display the ARVI result with a green-to-red palette
+  Map.centerObject(roi, 10);
+  Map.addLayer(arvi, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'ARVI');
+
+  // Optional: Export ARVI image to Google Drive
+  Export.image.toDrive({
+    image: arvi,
+    description: 'Post_ARVI_Helene',
+    scale: 10,  // Sentinel-2 has a 10m resolution for B8, B4, and B2
+    region: roi,
+    maxPixels: 1e9
+  });
+} else {
+  print('No Sentinel-2 images found for the specified date.');
+}
