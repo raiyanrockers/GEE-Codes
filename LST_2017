@@ -1,0 +1,139 @@
+var roi = table;
+//cloud mask
+function maskL8sr(image) {
+
+  var qaMask = image.select('QA_PIXEL').bitwiseAnd(parseInt('11111', 2)).eq(0);
+  var saturationMask = image.select('QA_RADSAT').eq(0);
+
+  // Apply the scaling factors to the appropriate bands.
+  var opticalBands = image.select('B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('B10').multiply(0.00341802).add(149.0).subtract(273.15);
+
+  // Replace the original bands with the scaled ones and apply the masks.
+  return image.addBands(opticalBands, null, true)
+      .addBands(thermalBands, null, true)
+      .updateMask(qaMask)
+      .updateMask(saturationMask)
+      .clip(roi);
+}
+
+
+//vis params
+var vizParams = {
+bands: ['B5', 'B6', 'B4'],
+min: 0,
+max: 4000,
+gamma: [1, 0.9, 1.1]
+};
+
+var vizParams2 = {
+bands: ['B4', 'B3', 'B2'],
+min: 0,
+max: 3000,
+gamma: 1.4,
+};
+
+//load the collection:
+ {
+var col = ee.ImageCollection('LANDSAT/LC08/C02/T1_TOA')
+.map(maskL8sr)
+.filterDate('2017-01-01','2017-12-31')
+.filterBounds(roi);
+}
+print(col, 'coleccion');
+
+//image reduction
+{
+var image = col.mean();
+print(image, 'image');
+Map.addLayer(image.clip(roi), vizParams2,false);
+}
+
+
+//median
+{
+var ndvi = image.normalizedDifference(['B5', 
+'B4']).rename('NDVI');
+var ndviParams = {min: 0.23480580165613912, max: 0.6672953111790336, palette: ['blue', 'white', 
+'green']};
+print(ndvi,'ndvi');
+Map.addLayer(ndvi.clip(roi), ndviParams, 'ndvi');
+}
+
+//select thermal band 10(with brightness tempereature), no calculation 
+var thermal= image.select('B10').multiply(0.1);
+var b10Params = {min: 291.918, max: 302.382, palette: ['blue', 
+'white', 'green']};
+Map.addLayer(thermal.clip(roi), b10Params, 'thermal',false);
+
+// find the min and max of NDVI
+{
+var min = ee.Number(ndvi.reduceRegion({
+reducer: ee.Reducer.min(),
+geometry: roi,
+scale: 30,
+maxPixels: 1e9
+}).values().get(0));
+print(min, 'min');
+var max = ee.Number(ndvi.reduceRegion({
+reducer: ee.Reducer.max(),
+geometry: roi,
+scale: 30,
+maxPixels: 1e9
+}).values().get(0));
+print(max, 'max')
+}
+
+//fractional vegetation
+{
+var fv =(ndvi.subtract(min).divide(max.subtract(min))).pow(ee.Number(2)).rename('FV'); 
+print(fv, 'fv');
+Map.addLayer(fv.clip(roi),{},'fv',false);
+}
+
+//Emissivity
+
+var a= ee.Number(0.004);
+var b= ee.Number(0.986);
+var EM=fv.multiply(a).add(b).rename('EMM');
+var imageVisParam3 = {min: 0.9865619146722164, max:0.989699971371314};
+Map.addLayer(EM.clip(roi), imageVisParam3,'EMM',false);
+
+//LST in Celsius Degree bring -273.15
+//NB: In Kelvin don't bring -273.15
+var LST = thermal.expression(
+'(Tb/(1 + (0.00115* (Tb / 1.438))*log(Ep)))-273.15', {
+ 'Tb': thermal.select('B10'),
+'Ep': EM.select('EMM')
+}).rename('LST');
+Map.addLayer(LST.clip(roi), {min:19.169541239289686, max:31.937762117169427, palette: [
+'040274', '040281', '0502a3', '0502b8', '0502ce', '0502e6',
+'0602ff', '235cb1', '307ef3', '269db1', '30c8e2', '32d3ef',
+'3be285', '3ff38f', '86e26f', '3ae237', 'b5e22e', 'd6e21f',
+'fff705', 'ffd611', 'ffb613', 'ff8b13', 'ff6e08', 'ff500d',
+'ff0000', 'de0101', 'c21301', 'a71001', '911003'
+ ]},'LST');
+ 
+Map.centerObject(roi,false)
+
+// Compute LST statistics
+
+var mLST = LST.reduceRegion({
+  reducer:ee.Reducer.mean(), 
+  geometry:roi, 
+  scale:30, 
+  maxPixels:1e9
+})
+
+print('print mLST',mLST)
+
+
+//Export toDrive
+
+Export.image.toDrive({
+  image: LST, 
+  description:'mLST (2021-2021)',
+  region:roi, 
+  scale:30, 
+  maxPixels:1e9
+  })
