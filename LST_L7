@@ -1,0 +1,242 @@
+var roi = table;
+var MIN_SCALE = 1/3;
+var MAX_SCALE = 3;
+var MIN_NEIGHBORS = 144;
+/* Apply the USGS L7 Phase-2 Gap filling protocol, using a single kernel size. */
+var GapFill = function(col, fill, kernelSize, upscale) {
+  var kernel = ee.Kernel.square(kernelSize * 30, "meters", false)
+  
+  // Find the pixels common to both scenes.
+  var common = col.mask().and(fill.mask())
+  var fc = fill.updateMask(common)
+  var sc = col.updateMask(common)
+  Map.addLayer(common.select(0).mask(common.select(0)), {palette:['000000']}, 'common mask (both exist)', false)
+
+  // Find the primary scaling factors with a regression.
+  // Interleave the bands for the regression.  This assumes the bands have the same names.
+  var regress = fc.addBands(sc)
+
+  regress = regress.select(regress.bandNames().sort())
+
+  var ratio = 5
+  
+  if(upscale) {
+    var fit = regress
+      .reduceResolution(ee.Reducer.median(), false, 500)
+      .reproject(regress.select(0).projection().scale(ratio, ratio))
+      .reduceNeighborhood(ee.Reducer.linearFit().forEach(src.bandNames()), kernel, null, false)
+      .unmask()
+      .reproject(regress.select(0).projection().scale(ratio, ratio))
+  } else {
+    var fit = regress
+      .reduceNeighborhood(ee.Reducer.linearFit().forEach(src.bandNames()), kernel, null, false)
+  }
+
+  var offset = fit.select(".*_offset")
+  var scale = fit.select(".*_scale")
+
+  Map.addLayer(scale.select('B1_scale'), {min:-2, max:2}, 'scale B1', false)
+  
+  // Find the secondary scaling factors using just means and stddev
+  var reducer = ee.Reducer.mean().combine(ee.Reducer.stdDev(), null, true)
+
+  if(upscale) {
+    var src_stats = col
+      .reduceResolution(ee.Reducer.median(), false, 500)
+      .reproject(regress.select(0).projection().scale(ratio, ratio))
+      .reduceNeighborhood(reducer, kernel, null, false)
+      .reproject(regress.select(0).projection().scale(ratio, ratio))
+
+    var fill_stats = fill
+      .reduceResolution(ee.Reducer.median(), false, 500)
+      .reproject(regress.select(0).projection().scale(ratio, ratio))
+      .reduceNeighborhood(reducer, kernel, null, false)
+      .reproject(regress.select(0).projection().scale(ratio, ratio))
+  } else {
+    var src_stats = col
+      .reduceNeighborhood(reducer, kernel, null, false)
+
+    var fill_stats = fill
+      .reduceNeighborhood(reducer, kernel, null, false)
+  }
+
+  var scale2 = src_stats.select(".*stdDev").divide(fill_stats.select(".*stdDev"))
+  var offset2 = src_stats.select(".*mean").subtract(fill_stats.select(".*mean").multiply(scale2))
+
+  var invalid = scale.lt(MIN_SCALE).or(scale.gt(MAX_SCALE))
+  Map.addLayer(invalid.select(0).mask(invalid.select(0)), {palette:['550000']}, 'invalid1', false)
+  scale = scale.where(invalid, scale2)
+  offset = offset.where(invalid, offset2)
+
+  // When all else fails, just use the difference of means as an offset.  
+  var invalid2 = scale.lt(MIN_SCALE).or(scale.gt(MAX_SCALE))
+  Map.addLayer(invalid2.select(0).mask(invalid2.select(0)), {palette:['552020']}, 'invalid2', false)
+  scale = scale.where(invalid2, 1)
+  offset = offset.where(invalid2, src_stats.select(".*mean").subtract(fill_stats.select(".*mean")))
+
+  // Apply the scaling and mask off pixels that didn't have enough neighbors.
+  var count = common.reduceNeighborhood(ee.Reducer.count(), kernel, null, true, "boxcar")
+  var scaled = fill.multiply(scale).add(offset)
+      .updateMask(count.gte(MIN_NEIGHBORS))
+
+  return col.unmask(scaled, true)
+}
+//cloud mask
+function maskL7sr(col) {
+  // Bits 3 and 5 are cloud shadow and cloud, respectively.
+  var cloudShadowBitMask = (1 << 3);
+  var cloudsBitMask = (1 << 5);
+  // Get the pixel QA band.
+  var qa = col.select('pixel_qa');
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                 .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return col.updateMask(mask);
+}
+function maskL7sr(fill) {
+  // Bits 3 and 5 are cloud shadow and cloud, respectively.
+  var cloudShadowBitMask = (1 << 3);
+  var cloudsBitMask = (1 << 5);
+  // Get the pixel QA band.
+  var qa = fill.select('pixel_qa');
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                 .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return fill.updateMask(mask);
+}
+//vis params
+var vizParams = {
+bands: ['B4', 'B6', 'B3'],
+min: 0,
+max: 4000,
+gamma: [1, 0.9, 1.1]
+};
+
+var vizParams2 = {
+bands: ['B4', 'B3', 'B2'],
+min: 0,
+max: 3000,
+gamma: 1.4,
+};
+//load the collection:
+ {
+
+var col = ee.ImageCollection("LANDSAT/LE07/C01/T1_SR")
+.map(maskL7sr)
+.filterDate('2010-01-01','2010-12-31')
+.filterBounds(roi);
+}
+{
+var fill = ee.ImageCollection("LANDSAT/LE07/C01/T1_SR")
+.map(maskL7sr)
+.filterDate('2010-01-01','2010-12-31')
+.filterBounds(roi);
+}
+print(col, 'coleccion');
+
+
+//image reduction
+{
+var image = col
+.mean();
+print(image, 'image');
+Map.addLayer(image.clip(roi), vizParams2,false);
+}
+
+
+//median
+{
+var ndvi = image.normalizedDifference(['B4', 
+'B3']).rename('NDVI');
+var ndviParams = {min: 0.23480580165613912, max: 0.6672953111790336, palette: ['blue', 'white', 
+'green']};
+print(ndvi,'ndvi');
+Map.addLayer(ndvi.clip(roi), ndviParams, 'ndvi');
+}
+
+//select thermal band 10(with brightness tempereature), no calculation 
+var thermal= image.select('B6').multiply(0.1);
+var b10Params = {min: 291.918, max: 302.382, palette: ['blue', 
+'white', 'green']};
+Map.addLayer(thermal.clip(roi), b10Params, 'thermal',false);
+
+// find the min and max of NDVI
+{
+var min = ee.Number(ndvi.reduceRegion({
+reducer: ee.Reducer.min(),
+geometry: roi,
+scale: 30,
+maxPixels: 1e9
+}).values().get(0));
+print(min, 'min');
+var max = ee.Number(ndvi.reduceRegion({
+reducer: ee.Reducer.max(),
+geometry: roi,
+scale: 30,
+maxPixels: 1e9
+}).values().get(0));
+print(max, 'max')
+}
+
+//fractional vegetation
+{
+var fv =(ndvi.subtract(min).divide(max.subtract(min))).pow(ee.Number(2)).rename('FV'); 
+print(fv, 'fv');
+Map.addLayer(fv.clip(roi),{},'fv',false);
+}
+
+//Emissivity
+
+var a= ee.Number(0.004);
+var b= ee.Number(0.986);
+var EM=fv.multiply(a).add(b).rename('EMM');
+var imageVisParam3 = {min: 0.9865619146722164, max:0.989699971371314};
+Map.addLayer(EM.clip(roi), imageVisParam3,'EMM',false);
+
+//LST in Celsius Degree bring -273.15
+//NB: In Kelvin don't bring -273.15
+var LST = thermal.expression(
+'(Tb/(1 + (0.00115* (Tb / 1.438))*log(Ep)))-273.15', {
+ 'Tb': thermal.select('B6'),
+'Ep': EM.select('EMM')
+}).rename('LST');
+Map.addLayer(LST.clip(roi), {min:15,max:60,palette: [
+'040274', '040281', '0502a3', '0502b8', '0502ce', '0502e6',
+'0602ff', '235cb1', '307ef3', '269db1', '30c8e2', '32d3ef',
+'3be285', '3ff38f', '86e26f', '3ae237', 'b5e22e', 'd6e21f',
+'fff705', 'ffd611', 'ffb613', 'ff8b13', 'ff6e08', 'ff500d',
+'ff0000', 'de0101', 'c21301', 'a71001', '911003'
+ ]},'LST');
+ 
+Map.centerObject(roi,false)
+
+// Compute LST statistics
+
+var mLST = LST.reduceRegion({
+  reducer:ee.Reducer.mean(), 
+  geometry:roi, 
+  scale:30, 
+  maxPixels:1e9
+})
+
+print('print mLST',mLST)
+
+//Export toDrive
+
+Export.image.toDrive({
+  image: LST, 
+  description:'LST_2004',
+  region:roi, 
+  scale:30, 
+  maxPixels:1e9
+  })
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
